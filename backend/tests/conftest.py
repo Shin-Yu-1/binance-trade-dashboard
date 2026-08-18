@@ -12,20 +12,18 @@ TEST_DATABASE_URL = os.environ.get(
 )
 
 
-@pytest_asyncio.fixture(scope="session")
-async def engine():
-    eng = create_async_engine(TEST_DATABASE_URL)
-    async with eng.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    yield eng
-    await eng.dispose()
-
-
 @pytest_asyncio.fixture
-async def session(engine) -> AsyncIterator[AsyncSession]:
+async def session() -> AsyncIterator[AsyncSession]:
+    # A fresh engine per test avoids asyncpg connections being reused
+    # across pytest-asyncio's per-test event loops ("attached to a
+    # different loop" errors).
+    engine = create_async_engine(TEST_DATABASE_URL)
     async with engine.begin() as conn:
-        for table in reversed(Base.metadata.sorted_tables):
-            await conn.execute(table.delete())
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+
     maker = async_sessionmaker(engine, expire_on_commit=False)
     async with maker() as s:
         yield s
+
+    await engine.dispose()

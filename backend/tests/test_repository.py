@@ -205,6 +205,16 @@ class TestPipelineStatus:
 
         status = await repository.get_pipeline_status(session, "BTCUSDT")
         assert status.ws_connected is True
+        assert status.updated_at == at
+
+    async def test_record_trade_received_updates_last_trade_at(self, session):
+        await repository.ensure_pipeline_status_row(session, "BTCUSDT")
+        at = _dt(7)
+
+        await repository.record_trade_received(session, "BTCUSDT", at)
+        await session.commit()
+
+        status = await repository.get_pipeline_status(session, "BTCUSDT")
         assert status.last_trade_at == at
 
     async def test_record_reconnect_increments_count(self, session):
