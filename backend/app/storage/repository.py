@@ -1,8 +1,9 @@
 from collections.abc import Sequence
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -69,6 +70,32 @@ async def get_candles(session: AsyncSession, symbol: str, limit: int = 500) -> l
     candles = list(result.scalars().all())
     candles.reverse()
     return candles
+
+
+async def get_taker_buy_sell_volume(
+    session: AsyncSession, symbol: str, since: datetime
+) -> tuple[Decimal, Decimal]:
+    """Sum traded quantity since ``since``, split by taker side.
+
+    Binance's ``is_buyer_maker`` marks the buyer as the passive (maker)
+    side, meaning the trade was initiated by an aggressive sell — so
+    ``is_buyer_maker=True`` sums into taker-sell volume, and ``False``
+    (the buyer was the aggressor) sums into taker-buy volume. This is a
+    standard proxy for short-term buy/sell pressure.
+    """
+    result = await session.execute(
+        select(Trade.is_buyer_maker, func.sum(Trade.qty))
+        .where(Trade.symbol == symbol, Trade.time >= since)
+        .group_by(Trade.is_buyer_maker)
+    )
+    buy_volume = Decimal("0")
+    sell_volume = Decimal("0")
+    for is_buyer_maker, total in result.all():
+        if is_buyer_maker:
+            sell_volume += total
+        else:
+            buy_volume += total
+    return buy_volume, sell_volume
 
 
 async def ensure_pipeline_status_row(session: AsyncSession, symbol: str) -> None:
