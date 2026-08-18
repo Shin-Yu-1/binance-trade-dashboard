@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -10,15 +10,20 @@ BASE_URL = "https://api.binance.com"
 UTC = timezone.utc
 
 
-def _raw_kline(open_ms: int, close_ms: int) -> list:
+def _to_ms(dt: datetime) -> int:
+    return int(dt.timestamp() * 1000)
+
+
+def _raw_kline(open_time: datetime) -> list:
+    close_time = open_time + timedelta(minutes=1) - timedelta(milliseconds=1)
     return [
-        open_ms,
+        _to_ms(open_time),
         "50000.00",
         "50100.00",
         "49900.00",
         "50050.00",
         "12.5",
-        close_ms,
+        _to_ms(close_time),
         "625000.0",
         100,
         "6.0",
@@ -29,24 +34,24 @@ def _raw_kline(open_ms: int, close_ms: int) -> list:
 
 @pytest.mark.asyncio
 async def test_parses_kline_fields():
-    now = datetime(2026, 8, 18, 12, 5, tzinfo=UTC)
+    open_time = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
+    now = open_time + timedelta(minutes=5)
     with respx.mock(assert_all_called=True) as mock:
-        mock.get(f"{BASE_URL}/api/v3/klines").respond(
-            200, json=[_raw_kline(1755518400000, 1755518459999)]
-        )
+        mock.get(f"{BASE_URL}/api/v3/klines").respond(200, json=[_raw_kline(open_time)])
         async with httpx.AsyncClient() as client:
             candles = await binance_rest.fetch_klines(
                 client,
                 BASE_URL,
                 "BTCUSDT",
-                datetime(2026, 8, 18, 12, 0, tzinfo=UTC),
-                datetime(2026, 8, 18, 12, 1, tzinfo=UTC),
+                open_time,
+                open_time + timedelta(minutes=1),
                 now=now,
             )
 
     assert len(candles) == 1
     candle = candles[0]
     assert candle["symbol"] == "BTCUSDT"
+    assert candle["open_time"] == open_time
     assert candle["open"] == "50000.00"
     assert candle["close"] == "50050.00"
     assert candle["trade_count"] == 100
@@ -55,19 +60,18 @@ async def test_parses_kline_fields():
 
 @pytest.mark.asyncio
 async def test_marks_in_progress_candle_as_not_closed():
-    now = datetime(2026, 8, 18, 12, 0, 30, tzinfo=UTC)
-    open_ms = 1755518400000  # 2026-08-18T12:00:00Z
-    close_ms = 1755518459999  # 2026-08-18T12:00:59.999Z (still in the future vs `now`)
+    open_time = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
+    now = open_time + timedelta(seconds=30)  # still inside this candle's minute
 
     with respx.mock(assert_all_called=True) as mock:
-        mock.get(f"{BASE_URL}/api/v3/klines").respond(200, json=[_raw_kline(open_ms, close_ms)])
+        mock.get(f"{BASE_URL}/api/v3/klines").respond(200, json=[_raw_kline(open_time)])
         async with httpx.AsyncClient() as client:
             candles = await binance_rest.fetch_klines(
                 client,
                 BASE_URL,
                 "BTCUSDT",
-                datetime(2026, 8, 18, 12, 0, tzinfo=UTC),
-                datetime(2026, 8, 18, 12, 1, tzinfo=UTC),
+                open_time,
+                open_time + timedelta(minutes=1),
                 now=now,
             )
 
@@ -77,13 +81,11 @@ async def test_marks_in_progress_candle_as_not_closed():
 @pytest.mark.asyncio
 async def test_paginates_until_a_partial_page_is_returned(monkeypatch):
     monkeypatch.setattr(binance_rest, "MAX_KLINES_PER_REQUEST", 2)
-    now = datetime(2026, 8, 18, 13, 0, tzinfo=UTC)
+    start = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
+    now = start + timedelta(hours=1)
 
-    page_1 = [
-        _raw_kline(1755518400000, 1755518459999),
-        _raw_kline(1755518460000, 1755518519999),
-    ]
-    page_2 = [_raw_kline(1755518520000, 1755518579999)]
+    page_1 = [_raw_kline(start), _raw_kline(start + timedelta(minutes=1))]
+    page_2 = [_raw_kline(start + timedelta(minutes=2))]
 
     with respx.mock(assert_all_called=True) as mock:
         route = mock.get(f"{BASE_URL}/api/v3/klines")
@@ -96,8 +98,8 @@ async def test_paginates_until_a_partial_page_is_returned(monkeypatch):
                 client,
                 BASE_URL,
                 "BTCUSDT",
-                datetime(2026, 8, 18, 12, 0, tzinfo=UTC),
-                datetime(2026, 8, 18, 12, 3, tzinfo=UTC),
+                start,
+                start + timedelta(minutes=3),
                 now=now,
             )
 
@@ -107,7 +109,7 @@ async def test_paginates_until_a_partial_page_is_returned(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_empty_response_ends_pagination():
-    now = datetime(2026, 8, 18, 13, 0, tzinfo=UTC)
+    start = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
     with respx.mock(assert_all_called=True) as mock:
         mock.get(f"{BASE_URL}/api/v3/klines").respond(200, json=[])
         async with httpx.AsyncClient() as client:
@@ -115,9 +117,9 @@ async def test_empty_response_ends_pagination():
                 client,
                 BASE_URL,
                 "BTCUSDT",
-                datetime(2026, 8, 18, 12, 0, tzinfo=UTC),
-                datetime(2026, 8, 18, 12, 1, tzinfo=UTC),
-                now=now,
+                start,
+                start + timedelta(minutes=1),
+                now=start + timedelta(hours=1),
             )
 
     assert candles == []
@@ -125,21 +127,21 @@ async def test_empty_response_ends_pagination():
 
 @pytest.mark.asyncio
 async def test_retries_on_429_then_succeeds():
-    now = datetime(2026, 8, 18, 13, 0, tzinfo=UTC)
+    start = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
     with respx.mock(assert_all_called=True) as mock:
         route = mock.get(f"{BASE_URL}/api/v3/klines")
         route.side_effect = [
             httpx.Response(429, headers={"Retry-After": "0"}, json={"msg": "rate limited"}),
-            httpx.Response(200, json=[_raw_kline(1755518400000, 1755518459999)]),
+            httpx.Response(200, json=[_raw_kline(start)]),
         ]
         async with httpx.AsyncClient() as client:
             candles = await binance_rest.fetch_klines(
                 client,
                 BASE_URL,
                 "BTCUSDT",
-                datetime(2026, 8, 18, 12, 0, tzinfo=UTC),
-                datetime(2026, 8, 18, 12, 1, tzinfo=UTC),
-                now=now,
+                start,
+                start + timedelta(minutes=1),
+                now=start + timedelta(hours=1),
             )
 
     assert len(candles) == 1
@@ -149,7 +151,7 @@ async def test_retries_on_429_then_succeeds():
 @pytest.mark.asyncio
 async def test_raises_after_exceeding_max_retries(monkeypatch):
     monkeypatch.setattr(binance_rest, "MAX_RETRIES", 1)
-    now = datetime(2026, 8, 18, 13, 0, tzinfo=UTC)
+    start = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
 
     with respx.mock(assert_all_called=True) as mock:
         route = mock.get(f"{BASE_URL}/api/v3/klines")
@@ -161,9 +163,9 @@ async def test_raises_after_exceeding_max_retries(monkeypatch):
                     client,
                     BASE_URL,
                     "BTCUSDT",
-                    datetime(2026, 8, 18, 12, 0, tzinfo=UTC),
-                    datetime(2026, 8, 18, 12, 1, tzinfo=UTC),
-                    now=now,
+                    start,
+                    start + timedelta(minutes=1),
+                    now=start + timedelta(hours=1),
                 )
 
     assert route.call_count == 2
