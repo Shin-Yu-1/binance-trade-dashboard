@@ -9,6 +9,7 @@ import {
   parseCandle,
   reduce,
   takerBuyRatio,
+  toChartCandles,
 } from "./liveState";
 
 function rawCandle(openTimeMs: number, overrides: Partial<RawCandle> = {}): RawCandle {
@@ -159,6 +160,43 @@ describe("reduce", () => {
     const state = reduce(initialState(symbols), { type: "status", ws_connected: false });
 
     expect(state.wsConnected).toBe(false);
+  });
+
+  it("stats 이벤트가 24h 테이커 체결량을 초기값으로 심는다", () => {
+    const state = reduce(initialState(symbols), {
+      type: "stats",
+      symbol: "BTCUSDT",
+      stats: { taker_buy_volume: "10", taker_sell_volume: "6" },
+    });
+
+    expect(state.symbols.BTCUSDT.takerBuyVolume).toBe(10);
+    expect(state.symbols.BTCUSDT.takerSellVolume).toBe(6);
+  });
+
+  it("심어진 24h 테이커 체결량 위에 실시간 체결이 누적된다", () => {
+    let state = reduce(initialState(symbols), {
+      type: "stats",
+      symbol: "BTCUSDT",
+      stats: { taker_buy_volume: "10", taker_sell_volume: "6" },
+    });
+    state = reduce(state, {
+      type: "trade",
+      symbol: "BTCUSDT",
+      record: rawTrade({ qty: "2", is_buyer_maker: false }),
+    });
+
+    expect(state.symbols.BTCUSDT.takerBuyVolume).toBe(12);
+  });
+});
+
+describe("toChartCandles", () => {
+  it("lightweight-charts가 쓰는 초 단위 time과 OHLC로 매핑한다", () => {
+    const openTime = Date.UTC(2026, 7, 20, 0, 0);
+    const candles = [parseCandle(rawCandle(openTime))];
+
+    expect(toChartCandles(candles)).toEqual([
+      { time: openTime / 1000, open: 100, high: 110, low: 90, close: 105 },
+    ]);
   });
 });
 

@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.storage import repository
 from app.storage.db import get_session
 from app.storage.models import Candle1m
@@ -107,3 +108,13 @@ async def get_health(session: AsyncSession = Depends(get_session)):
             }
         )
     return result
+
+
+@router.get("/config")
+async def get_config():
+    """대시보드가 수집 대상 심볼 목록을 런타임에 알아내는 엔드포인트.
+
+    SYMBOLS 환경변수만 바꾸면 프론트엔드 재빌드 없이 종목을 늘릴 수 있다.
+    """
+    settings = get_settings()
+    return {"symbols": settings.symbol_list}

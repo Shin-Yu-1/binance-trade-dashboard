@@ -9,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from app.api.eventbus import EventBus
 from app.api.routes_rest import router as rest_router
 from app.api.routes_ws import router as ws_router
+from app.config import get_settings
 from app.storage import repository
 from app.storage.db import get_session
 
@@ -112,12 +113,15 @@ async def test_get_stats_computes_change_high_low_volume(session_factory):
 
 @pytest.mark.asyncio
 async def test_get_stats_reports_taker_buy_sell_volume(session_factory):
+    # /api/stats는 "지금부터 24h"만 집계하므로 체결 시각도 현재 기준 상대값으로
+    # 심는다 (고정 날짜를 쓰면 시간이 지나면서 집계 창을 벗어나 깨진다).
+    recent = datetime.now(UTC) - timedelta(minutes=5)
     async with session_factory() as session:
         await repository.upsert_trades(
             session,
             [
                 {
-                    "time": datetime(2026, 8, 18, 11, 0, tzinfo=UTC),
+                    "time": recent,
                     "symbol": "BTCUSDT",
                     "trade_id": 1,
                     "price": "100",
@@ -126,7 +130,7 @@ async def test_get_stats_reports_taker_buy_sell_volume(session_factory):
                     "is_buyer_maker": False,
                 },
                 {
-                    "time": datetime(2026, 8, 18, 11, 0, tzinfo=UTC),
+                    "time": recent,
                     "symbol": "BTCUSDT",
                     "trade_id": 2,
                     "price": "100",
@@ -211,3 +215,16 @@ def test_ws_live_serializes_datetime_and_decimal():
 
     assert message["record"]["open_time"] == "2026-08-18T12:00:00+00:00"
     assert message["record"]["close"] == "100.5"
+
+
+@pytest.mark.asyncio
+async def test_get_config_exposes_configured_symbols(session_factory):
+    """대시보드가 SYMBOLS 환경변수를 프론트 재빌드 없이 따라가게 한다."""
+    app = _build_app(session_factory)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/config")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["symbols"] == get_settings().symbol_list
+    assert body["symbols"]
