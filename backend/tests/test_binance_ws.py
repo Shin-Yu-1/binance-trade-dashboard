@@ -211,3 +211,50 @@ async def test_client_survives_handler_exception_and_keeps_reconnecting():
                 await run_task
 
     assert connect_count == 2
+
+
+@pytest.mark.asyncio
+async def test_client_survives_lifecycle_hook_exception():
+    """상태 기록(on_disconnected)이 DB 장애로 터져도 재연결은 계속돼야 한다."""
+    connect_count = 0
+    second_connect = asyncio.Event()
+
+    async def handler(ws):
+        nonlocal connect_count
+        connect_count += 1
+        if connect_count == 1:
+            await ws.close()
+        else:
+            second_connect.set()
+            await asyncio.sleep(10)
+
+    async def on_trade(symbol: str, record: dict) -> None:
+        pass
+
+    async def on_kline(symbol: str, record: dict) -> None:
+        pass
+
+    async def on_disconnected() -> None:
+        raise RuntimeError("simulated DB failure while recording status")
+
+    async with websockets.serve(handler, "localhost", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        client = binance_ws.BinanceWebSocketClient(
+            ws_url=f"ws://localhost:{port}/stream",
+            symbols=["BTCUSDT"],
+            on_trade=on_trade,
+            on_kline=on_kline,
+            on_disconnected=on_disconnected,
+            min_backoff=0.01,
+            max_backoff=0.01,
+        )
+        run_task = asyncio.create_task(client.run())
+        try:
+            await asyncio.wait_for(second_connect.wait(), timeout=5)
+        finally:
+            client.stop()
+            run_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await run_task
+
+    assert connect_count == 2

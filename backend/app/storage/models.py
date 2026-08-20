@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Integer, Numeric, String
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, Numeric, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 _TZ_DATETIME = DateTime(timezone=True)
@@ -17,7 +17,9 @@ class Trade(Base):
 
     time: Mapped[datetime] = mapped_column(_TZ_DATETIME, primary_key=True)
     symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
-    trade_id: Mapped[int] = mapped_column(primary_key=True)
+    # Binance 체결 ID는 이미 int32를 넘었다 — BigInteger로 고정해야 하며,
+    # 마이그레이션(0001)도 같은 타입이다.
+    trade_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     price: Mapped[float] = mapped_column(Numeric)
     qty: Mapped[float] = mapped_column(Numeric)
     quote_qty: Mapped[float] = mapped_column(Numeric)

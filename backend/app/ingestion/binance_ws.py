@@ -125,9 +125,18 @@ class BinanceWebSocketClient:
                         await self._dispatch(raw_message)
             except (websockets.exceptions.ConnectionClosed, OSError) as exc:
                 logger.warning("Binance WS disconnected: %s", exc)
+            except Exception:
+                # 핸들러(DB 쓰기 등)에서 올라온 예상 밖 예외까지 여기서 막는다.
+                # 이걸 놓치면 수집 태스크만 조용히 죽고 API는 계속 200을
+                # 반환하는, 가장 발견하기 어려운 장애가 된다.
+                logger.exception("Binance WS loop failed unexpectedly; reconnecting")
             finally:
                 if self._on_disconnected:
-                    await self._on_disconnected()
+                    try:
+                        await self._on_disconnected()
+                    except Exception:
+                        # 상태 기록 실패가 재연결 루프를 멈추게 하지 않는다.
+                        logger.exception("on_disconnected hook failed")
 
             if self._stop:
                 break

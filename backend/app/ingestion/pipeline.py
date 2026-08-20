@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -8,6 +9,8 @@ from app.ingestion.backfill import BackfillService
 from app.ingestion.binance_ws import BinanceWebSocketClient
 from app.ingestion.trade_buffer import TradeBuffer
 from app.storage import repository
+
+logger = logging.getLogger(__name__)
 
 
 class IngestionPipeline:
@@ -51,10 +54,16 @@ class IngestionPipeline:
         )
 
     async def initial_backfill(self) -> None:
+        """심볼별로 독립 시도한다 — 한 심볼의 실패가 나머지를 막지 않는다."""
         for symbol in self._symbols:
-            async with self._session_factory() as session:
-                await self._backfill_service.sync(session, symbol)
-                await session.commit()
+            try:
+                async with self._session_factory() as session:
+                    await self._backfill_service.sync(session, symbol)
+                    await session.commit()
+            except Exception:
+                # 과거 구간이 비는 것보다 지금 들어오는 체결을 놓치는 쪽이
+                # 더 치명적이다. 백필은 다음 재연결 때 같은 로직으로 재시도된다.
+                logger.exception("Initial backfill failed for %s; continuing", symbol)
 
     async def run(self) -> None:
         await self.initial_backfill()
