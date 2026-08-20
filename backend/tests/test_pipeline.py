@@ -152,3 +152,37 @@ async def test_handle_disconnected_marks_status_and_records_error(session_factor
         status = await repository.get_pipeline_status(session, "BTCUSDT")
     assert status.ws_connected is False
     assert status.error_count == 1
+
+
+class FailingBackfillService:
+    """첫 심볼 백필에서 터지는 스텁 — 예: Binance REST 장애."""
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    async def sync(self, session, symbol, now=None):
+        self.calls.append(symbol)
+        raise RuntimeError("Binance REST unavailable")
+
+
+@pytest.mark.asyncio
+async def test_run_starts_stream_even_when_initial_backfill_fails(session_factory):
+    """초기 백필 실패가 실시간 수집 자체를 막아서는 안 된다.
+
+    과거 데이터가 비는 것보다 지금 들어오는 체결을 놓치는 게 더 치명적이고,
+    백필은 다음 재연결 때 같은 로직으로 다시 시도된다.
+    """
+    backfill = FailingBackfillService()
+    pipeline = _make_pipeline(session_factory, backfill=backfill)
+    started = False
+
+    async def fake_ws_run():
+        nonlocal started
+        started = True
+
+    pipeline.ws_client.run = fake_ws_run  # type: ignore[method-assign]
+
+    await pipeline.run()
+
+    assert backfill.calls == ["BTCUSDT", "ETHUSDT"]  # 한 심볼이 터져도 나머지를 계속 시도
+    assert started is True

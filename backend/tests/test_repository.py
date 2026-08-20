@@ -19,6 +19,28 @@ async def _count(session, model) -> int:
 
 
 class TestUpsertTrades:
+    async def test_stores_trade_ids_beyond_int32_range(self, session):
+        """Binance의 실제 체결 ID는 이미 65억대로 int32(21억)를 넘는다."""
+        big_trade_id = 6_585_551_884
+
+        await repository.upsert_trades(
+            session,
+            [
+                {
+                    "time": _dt(0),
+                    "symbol": "BTCUSDT",
+                    "trade_id": big_trade_id,
+                    "price": "69851.99",
+                    "qty": "0.00142",
+                    "quote_qty": "99.189825",
+                    "is_buyer_maker": True,
+                }
+            ],
+        )
+
+        stored = (await session.execute(select(Trade.trade_id))).scalar_one()
+        assert stored == big_trade_id
+
     async def test_inserts_new_trades(self, session):
         await repository.upsert_trades(
             session,

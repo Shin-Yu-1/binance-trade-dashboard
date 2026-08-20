@@ -149,3 +149,65 @@ async def test_client_reconnects_and_resumes_dispatching_after_disconnect():
     assert connect_count == 2
     assert trades == [("BTCUSDT", trades[0][1])]
     assert trades[0][1]["trade_id"] == 1
+
+
+@pytest.mark.asyncio
+async def test_client_survives_handler_exception_and_keeps_reconnecting():
+    """핸들러(=DB 쓰기 등)에서 터진 예상 밖 예외가 수집을 영구히 멈추면 안 된다.
+
+    이걸 잡지 않으면 백그라운드 태스크만 조용히 죽고 API는 200을 계속
+    돌려주는 최악의 장애 모드가 된다.
+    """
+    connect_count = 0
+    second_connect = asyncio.Event()
+
+    async def handler(ws):
+        nonlocal connect_count
+        connect_count += 1
+        if connect_count == 1:
+            await ws.send(
+                json.dumps(
+                    {
+                        "data": {
+                            "e": "trade",
+                            "s": "BTCUSDT",
+                            "t": 1,
+                            "p": "1",
+                            "q": "1",
+                            "T": 0,
+                            "m": False,
+                        }
+                    }
+                )
+            )
+            await asyncio.sleep(10)
+        else:
+            second_connect.set()
+            await asyncio.sleep(10)
+
+    async def on_trade(symbol: str, record: dict) -> None:
+        raise RuntimeError("simulated DB failure")
+
+    async def on_kline(symbol: str, record: dict) -> None:
+        pass
+
+    async with websockets.serve(handler, "localhost", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        client = binance_ws.BinanceWebSocketClient(
+            ws_url=f"ws://localhost:{port}/stream",
+            symbols=["BTCUSDT"],
+            on_trade=on_trade,
+            on_kline=on_kline,
+            min_backoff=0.01,
+            max_backoff=0.01,
+        )
+        run_task = asyncio.create_task(client.run())
+        try:
+            await asyncio.wait_for(second_connect.wait(), timeout=5)
+        finally:
+            client.stop()
+            run_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await run_task
+
+    assert connect_count == 2
